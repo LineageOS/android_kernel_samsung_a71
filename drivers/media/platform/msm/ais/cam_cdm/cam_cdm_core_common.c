@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -243,51 +243,39 @@ int cam_cdm_stream_ops_internal(void *hw_priv,
 		return -EINVAL;
 
 	core = (struct cam_cdm *)cdm_hw->core_info;
-	mutex_lock(&cdm_hw->hw_mutex);
 	client_idx = CAM_CDM_GET_CLIENT_IDX(*handle);
 	client = core->clients[client_idx];
 	if (!client) {
 		CAM_ERR(CAM_CDM, "Invalid client %pK hdl=%x", client, *handle);
-		mutex_unlock(&cdm_hw->hw_mutex);
 		return -EINVAL;
 	}
 	cam_cdm_get_client_refcount(client);
 	if (*handle != client->handle) {
 		CAM_ERR(CAM_CDM, "client id given handle=%x invalid", *handle);
-		rc = -EINVAL;
-		goto end;
+		cam_cdm_put_client_refcount(client);
+		return -EINVAL;
 	}
 	if (operation == true) {
 		if (true == client->stream_on) {
 			CAM_ERR(CAM_CDM,
 				"Invalid CDM client is already streamed ON");
-			goto end;
+			cam_cdm_put_client_refcount(client);
+			return rc;
 		}
 	} else {
 		if (client->stream_on == false) {
 			CAM_ERR(CAM_CDM,
 				"Invalid CDM client is already streamed Off");
-			goto end;
+			cam_cdm_put_client_refcount(client);
+			return rc;
 		}
 	}
 
+	mutex_lock(&cdm_hw->hw_mutex);
 	if (operation == true) {
 		if (!cdm_hw->open_count) {
 			struct cam_ahb_vote ahb_vote;
 			struct cam_axi_vote axi_vote;
-
-			if (core->id != CAM_CDM_VIRTUAL) {
-				rc = cam_soc_util_enable_platform_resource(
-						&cdm_hw->soc_info, true,
-						CAM_SVS_VOTE, true);
-				if (rc) {
-					CAM_ERR(CAM_CDM,
-						"Enable platform failed");
-					goto end;
-				}
-			}
-
-			CAM_DBG(CAM_CDM, "Enable soc done");
 
 			ahb_vote.type = CAM_VOTE_ABSOLUTE;
 			ahb_vote.vote.level = CAM_SVS_VOTE;
@@ -299,7 +287,7 @@ int cam_cdm_stream_ops_internal(void *hw_priv,
 				&ahb_vote, &axi_vote);
 			if (rc != 0) {
 				CAM_ERR(CAM_CDM, "CPAS start failed");
-				goto disable_platform_resource;
+				goto end;
 			}
 			CAM_DBG(CAM_CDM, "CDM init first time");
 			if (core->id == CAM_CDM_VIRTUAL) {
@@ -379,15 +367,6 @@ int cam_cdm_stream_ops_internal(void *hw_priv,
 			rc = -ENXIO;
 		}
 	}
-	goto end;
-
-disable_platform_resource:
-	if (core->id != CAM_CDM_VIRTUAL) {
-		if (cam_soc_util_disable_platform_resource(&cdm_hw->soc_info,
-				true, true))
-			CAM_ERR(CAM_CDM, "Disable platform resource failed");
-	}
-
 end:
 	cam_cdm_put_client_refcount(client);
 	mutex_unlock(&cdm_hw->hw_mutex);

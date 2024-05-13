@@ -1,5 +1,4 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+/* Copyright (c) 2016-2019, 2022 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -197,10 +196,10 @@ int cam_mem_get_io_buf(int32_t buf_handle, int32_t mmu_handle,
 
 	idx = CAM_MEM_MGR_GET_HDL_IDX(buf_handle);
 	if (idx >= CAM_MEM_BUFQ_MAX || idx <= 0)
-		return -EINVAL;
+		return -ENOENT;
 
 	if (!tbl.bufq[idx].active)
-		return -EINVAL;
+		return -EAGAIN;
 
 	mutex_lock(&tbl.bufq[idx].q_lock);
 	if (buf_handle != tbl.bufq[idx].buf_handle) {
@@ -252,50 +251,33 @@ int cam_mem_get_cpu_buf(int32_t buf_handle, uintptr_t *vaddr_ptr, size_t *len)
 	if (idx >= CAM_MEM_BUFQ_MAX || idx <= 0)
 		return -EINVAL;
 
-	mutex_lock(&tbl.bufq[idx].q_lock);
-	if (!tbl.bufq[idx].active) {
-		CAM_ERR(CAM_MEM, "idx: %d not active", idx);
-		rc = -EPERM;
-		goto end;
-	}
+	if (!tbl.bufq[idx].active)
+		return -EPERM;
 
-	if (buf_handle != tbl.bufq[idx].buf_handle) {
-		CAM_ERR(CAM_MEM, "idx: %d Invalid buf handle %d",
-				idx, buf_handle);
-		rc = -EINVAL;
-		goto end;
-	}
+	if (buf_handle != tbl.bufq[idx].buf_handle)
+		return -EINVAL;
 
-	if (!(tbl.bufq[idx].flags & CAM_MEM_FLAG_KMD_ACCESS)) {
-		CAM_ERR(CAM_MEM, "idx: %d Invalid flag 0x%x",
-					idx, tbl.bufq[idx].flags);
-		rc = -EINVAL;
-		goto end;
-	}
+	if (!(tbl.bufq[idx].flags & CAM_MEM_FLAG_KMD_ACCESS))
+		return -EINVAL;
 
 	if (tbl.bufq[idx].kmdvaddr) {
 		dmabuf = tbl.bufq[idx].dma_buf;
 		if (!dmabuf) {
 			CAM_ERR(CAM_MEM, "Invalid DMA buffer pointer");
-			rc = -EINVAL;
-			goto end;
+			return -EINVAL;
 		}
 		rc = dma_buf_begin_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
 		if (rc) {
 			CAM_ERR(CAM_MEM, "dma begin access failed rc=%d", rc);
-			goto end;
+			return rc;
 		}
 	} else {
-		CAM_ERR(CAM_MEM, "Invalid kmdvaddr");
-		rc = -EINVAL;
-		goto end;
+		return -EINVAL;
 	}
 
 	*vaddr_ptr = tbl.bufq[idx].kmdvaddr;
 	*len = tbl.bufq[idx].len;
 
-end:
-	mutex_unlock(&tbl.bufq[idx].q_lock);
 	return rc;
 }
 EXPORT_SYMBOL(cam_mem_get_cpu_buf);
@@ -318,38 +300,30 @@ int cam_mem_put_cpu_buf(int32_t buf_handle)
 	if (idx >= CAM_MEM_BUFQ_MAX || idx <= 0)
 		return -EINVAL;
 
-	mutex_lock(&tbl.bufq[idx].q_lock);
-	if (!tbl.bufq[idx].active) {
-		CAM_ERR(CAM_MEM, "idx: %d not active", idx);
-		rc = -EPERM;
-		goto end;
-	}
+	if (!tbl.bufq[idx].active)
+		return -EPERM;
 
-	if (buf_handle != tbl.bufq[idx].buf_handle) {
-		CAM_ERR(CAM_MEM, "idx: %d Invalid buf handle %d",
-				idx, buf_handle);
-		rc = -EINVAL;
-		goto end;
-	}
+	if (buf_handle != tbl.bufq[idx].buf_handle)
+		return -EINVAL;
 
 	dmabuf = tbl.bufq[idx].dma_buf;
 	if (!dmabuf) {
 		CAM_ERR(CAM_CRM, "Invalid DMA buffer pointer");
-		rc = -EINVAL;
-		goto end;
+		return -EINVAL;
 	}
 
 	if ((tbl.bufq[idx].flags & CAM_MEM_FLAG_KMD_ACCESS) &&
 		(tbl.bufq[idx].kmdvaddr)) {
 		rc = dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
-		if (rc)
+		if (rc) {
 			CAM_ERR(CAM_MEM, "dma begin access failed rc=%d", rc);
+			return rc;
+		}
 	} else {
 		CAM_ERR(CAM_MEM, "Invalid buf flag");
 		rc = -EINVAL;
 	}
-end:
-	mutex_unlock(&tbl.bufq[idx].q_lock);
+
 	return rc;
 }
 EXPORT_SYMBOL(cam_mem_put_cpu_buf);
@@ -459,6 +433,7 @@ static int cam_mem_util_get_dma_buf_fd(size_t len,
 	struct dma_buf **buf,
 	int *fd)
 {
+	struct dma_buf *dmabuf = NULL;
 	int rc = 0;
 
 	if (!buf || !fd) {
@@ -469,12 +444,6 @@ static int cam_mem_util_get_dma_buf_fd(size_t len,
 	*buf = ion_alloc(len, heap_id_mask, flags);
 	if (IS_ERR_OR_NULL(*buf))
 		return -ENOMEM;
-	/*
-	 * increment the ref count so that ref count becomes 2 here
-	 * when we close fd, refcount becomes 1 and when we do
-	 * dmap_put_buf, ref count becomes 0 and memory will be freed.
-	 */
-	get_dma_buf(*buf);
 
 	*fd = dma_buf_fd(*buf, O_CLOEXEC);
 	if (*fd < 0) {
@@ -482,6 +451,18 @@ static int cam_mem_util_get_dma_buf_fd(size_t len,
 		rc = -EINVAL;
 		goto get_fd_fail;
 	}
+
+	/*
+	 * increment the ref count so that ref count becomes 2 here
+	 * when we close fd, refcount becomes 1 and when we do
+	 * dmap_put_buf, ref count becomes 0 and memory will be freed.
+	 */
+	dmabuf = dma_buf_get(*fd);
+	if (IS_ERR_OR_NULL(dmabuf)) {
+		CAM_ERR(CAM_MEM, "dma_buf_get failed, *fd=%d", *fd);
+		rc = -EINVAL;
+	}
+
 	return rc;
 
 get_fd_fail:
@@ -577,7 +558,6 @@ static int cam_mem_util_map_hw_va(uint32_t flags,
 	int32_t *mmu_hdls,
 	int32_t num_hdls,
 	int fd,
-	struct dma_buf *dmabuf,
 	dma_addr_t *hw_vaddr,
 	size_t *len,
 	enum cam_smmu_region_id region)
@@ -599,7 +579,6 @@ static int cam_mem_util_map_hw_va(uint32_t flags,
 		for (i = 0; i < num_hdls; i++) {
 			rc = cam_smmu_map_stage2_iova(mmu_hdls[i],
 				fd,
-				dmabuf,
 				dir,
 				hw_vaddr,
 				len);
@@ -615,7 +594,6 @@ static int cam_mem_util_map_hw_va(uint32_t flags,
 		for (i = 0; i < num_hdls; i++) {
 			rc = cam_smmu_map_user_iova(mmu_hdls[i],
 				fd,
-				dmabuf,
 				dir,
 				(dma_addr_t *)hw_vaddr,
 				len,
@@ -710,7 +688,6 @@ int cam_mem_mgr_alloc_and_map(struct cam_mem_mgr_alloc_cmd *cmd)
 			cmd->mmu_hdls,
 			cmd->num_hdl,
 			fd,
-			dmabuf,
 			&hw_vaddr,
 			&len,
 			region);
@@ -802,8 +779,7 @@ int cam_mem_mgr_map(struct cam_mem_mgr_map_cmd *cmd)
 
 	dmabuf = dma_buf_get(cmd->fd);
 	if (IS_ERR_OR_NULL((void *)(dmabuf))) {
-		CAM_ERR(CAM_MEM, "Failed to import dma_buf fd %d, rc %d",
-			cmd->fd, (IS_ERR(dmabuf) ? PTR_ERR(dmabuf) : 0));
+		CAM_ERR(CAM_MEM, "Failed to import dma_buf fd");
 		return -EINVAL;
 	}
 
@@ -813,7 +789,6 @@ int cam_mem_mgr_map(struct cam_mem_mgr_map_cmd *cmd)
 			cmd->mmu_hdls,
 			cmd->num_hdl,
 			cmd->fd,
-			dmabuf,
 			&hw_vaddr,
 			&len,
 			CAM_SMMU_REGION_IO);
@@ -978,7 +953,6 @@ static int cam_mem_mgr_cleanup_table(void)
 		tbl.bufq[i].num_hdl = 0;
 		tbl.bufq[i].dma_buf = NULL;
 		tbl.bufq[i].active = false;
-		tbl.bufq[i].kmdvaddr = 0;
 		mutex_unlock(&tbl.bufq[i].q_lock);
 		mutex_destroy(&tbl.bufq[i].q_lock);
 	}
@@ -1031,7 +1005,7 @@ static int cam_mem_util_unmap(int32_t idx,
 				tbl.bufq[idx].kmdvaddr);
 			if (rc)
 				CAM_ERR(CAM_MEM,
-					"Failed, dmabuf=%pK, kmdvaddr=%llxK",
+					"Failed, dmabuf=%pK, kmdvaddr=%pK",
 					tbl.bufq[idx].dma_buf,
 					tbl.bufq[idx].kmdvaddr);
 		}
@@ -1051,6 +1025,8 @@ static int cam_mem_util_unmap(int32_t idx,
 		if (cam_mem_util_unmap_hw_va(idx, region, client))
 			CAM_ERR(CAM_MEM, "Failed, dmabuf=%pK",
 				tbl.bufq[idx].dma_buf);
+		if (client == CAM_SMMU_MAPPING_KERNEL)
+			tbl.bufq[idx].dma_buf = NULL;
 	}
 
 	mutex_lock(&tbl.bufq[idx].q_lock);
@@ -1066,7 +1042,8 @@ static int cam_mem_util_unmap(int32_t idx,
 		tbl.bufq[idx].is_imported,
 		tbl.bufq[idx].dma_buf);
 
-	dma_buf_put(tbl.bufq[idx].dma_buf);
+	if (tbl.bufq[idx].dma_buf)
+		dma_buf_put(tbl.bufq[idx].dma_buf);
 
 	tbl.bufq[idx].fd = -1;
 	tbl.bufq[idx].dma_buf = NULL;
@@ -1074,7 +1051,6 @@ static int cam_mem_util_unmap(int32_t idx,
 	tbl.bufq[idx].len = 0;
 	tbl.bufq[idx].num_hdl = 0;
 	tbl.bufq[idx].active = false;
-	tbl.bufq[idx].kmdvaddr = 0;
 	mutex_unlock(&tbl.bufq[idx].q_lock);
 	mutex_destroy(&tbl.bufq[idx].q_lock);
 	clear_bit(idx, tbl.bitmap);

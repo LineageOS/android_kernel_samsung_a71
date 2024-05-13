@@ -1,5 +1,4 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -12,7 +11,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/rwsem.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <media/v4l2-fh.h>
@@ -34,8 +32,6 @@
 
 static struct cam_req_mgr_device g_dev;
 struct kmem_cache *g_cam_req_mgr_timer_cachep;
-
-DECLARE_RWSEM(rwsem_lock);
 
 static int cam_media_device_setup(struct device *dev)
 {
@@ -102,27 +98,9 @@ static void cam_v4l2_device_cleanup(void)
 	g_dev.v4l2_dev = NULL;
 }
 
-void cam_req_mgr_rwsem_read_op(enum cam_subdev_rwsem lock)
-{
-	if (lock == CAM_SUBDEV_LOCK)
-		down_read(&rwsem_lock);
-	else if (lock == CAM_SUBDEV_UNLOCK)
-		up_read(&rwsem_lock);
-}
-
-static void cam_req_mgr_rwsem_write_op(enum cam_subdev_rwsem lock)
-{
-	if (lock == CAM_SUBDEV_LOCK)
-		down_write(&rwsem_lock);
-	else if (lock == CAM_SUBDEV_UNLOCK)
-		up_write(&rwsem_lock);
-}
-
 static int cam_req_mgr_open(struct file *filep)
 {
 	int rc;
-
-	cam_req_mgr_rwsem_write_op(CAM_SUBDEV_LOCK);
 
 	mutex_lock(&g_dev.cam_lock);
 	if (g_dev.open_cnt >= 1) {
@@ -149,14 +127,12 @@ static int cam_req_mgr_open(struct file *filep)
 	}
 
 	mutex_unlock(&g_dev.cam_lock);
-	cam_req_mgr_rwsem_write_op(CAM_SUBDEV_UNLOCK);
 	return rc;
 
 mem_mgr_init_fail:
 	v4l2_fh_release(filep);
 end:
 	mutex_unlock(&g_dev.cam_lock);
-	cam_req_mgr_rwsem_write_op(CAM_SUBDEV_UNLOCK);
 	return rc;
 }
 
@@ -182,13 +158,10 @@ static int cam_req_mgr_close(struct file *filep)
 	struct v4l2_fh *vfh = filep->private_data;
 	struct v4l2_subdev_fh *subdev_fh = to_v4l2_subdev_fh(vfh);
 
-	cam_req_mgr_rwsem_write_op(CAM_SUBDEV_LOCK);
-
 	mutex_lock(&g_dev.cam_lock);
 
 	if (g_dev.open_cnt <= 0) {
 		mutex_unlock(&g_dev.cam_lock);
-		cam_req_mgr_rwsem_write_op(CAM_SUBDEV_UNLOCK);
 		return -EINVAL;
 	}
 
@@ -215,8 +188,6 @@ static int cam_req_mgr_close(struct file *filep)
 	cam_mem_mgr_deinit();
 	mutex_unlock(&g_dev.cam_lock);
 
-	cam_req_mgr_rwsem_write_op(CAM_SUBDEV_UNLOCK);
-
 	return 0;
 }
 
@@ -231,10 +202,61 @@ static struct v4l2_file_operations g_cam_fops = {
 #endif
 };
 
+static void cam_v4l2_event_queue_notify_error(const struct v4l2_event *old,
+	struct v4l2_event *new)
+{
+	struct cam_req_mgr_message *ev_header;
+
+	ev_header = CAM_REQ_MGR_GET_PAYLOAD_PTR((*old),
+		struct cam_req_mgr_message);
+	switch (old->id) {
+	case V4L_EVENT_CAM_REQ_MGR_SOF:
+	case V4L_EVENT_CAM_REQ_MGR_SOF_BOOT_TS:
+		if (ev_header->u.frame_msg.request_id)
+			CAM_ERR(CAM_CRM,
+				"Failed to notify %s Sess %X FrameId %lld ReqId %lld link %X",
+				((old->id == V4L_EVENT_CAM_REQ_MGR_SOF) ?
+				"SOF_TS" : "BOOT_TS"),
+				ev_header->session_hdl,
+				ev_header->u.frame_msg.frame_id,
+				//ev_header->u.frame_msg.frame_id_meta,
+				ev_header->u.frame_msg.request_id,
+				ev_header->u.frame_msg.link_hdl);
+		else
+			CAM_ERR(CAM_CRM,
+				"Failed to notify %s Sess %X FrameId %lld ReqId %lld link %X",
+				((old->id == V4L_EVENT_CAM_REQ_MGR_SOF) ?
+				"SOF_TS" : "BOOT_TS"),
+				ev_header->session_hdl,
+				ev_header->u.frame_msg.frame_id,
+				//ev_header->u.frame_msg.frame_id_meta,
+				ev_header->u.frame_msg.request_id,
+				ev_header->u.frame_msg.link_hdl);
+		break;
+	case V4L_EVENT_CAM_REQ_MGR_ERROR:
+		CAM_ERR(CAM_CRM,
+			"Failed to notify ERROR Sess %X ReqId %d Link %X Type %d",
+			ev_header->session_hdl,
+			ev_header->u.err_msg.request_id,
+			ev_header->u.err_msg.link_hdl,
+			ev_header->u.err_msg.error_type);
+		break;
+	default:
+		CAM_ERR(CAM_CRM, "Failed to notify crm event id %d",
+			old->id);
+	}
+}
+
+static struct v4l2_subscribed_event_ops g_cam_v4l2_ops = {
+	.merge = cam_v4l2_event_queue_notify_error,
+};
+
+
 static int cam_subscribe_event(struct v4l2_fh *fh,
 	const struct v4l2_event_subscription *sub)
 {
-	return v4l2_event_subscribe(fh, sub, CAM_REQ_MGR_EVENT_MAX, NULL);
+	return v4l2_event_subscribe(fh, sub, CAM_REQ_MGR_EVENT_MAX,
+		&g_cam_v4l2_ops);
 }
 
 static int cam_unsubscribe_event(struct v4l2_fh *fh,
@@ -297,49 +319,26 @@ static long cam_private_ioctl(struct file *file, void *fh,
 		break;
 
 	case CAM_REQ_MGR_LINK: {
-		struct cam_req_mgr_ver_info ver_info;
+		struct cam_req_mgr_link_info link_info;
 
-		if (k_ioctl->size != sizeof(ver_info.u.link_info_v1))
+		if (k_ioctl->size != sizeof(link_info))
 			return -EINVAL;
 
-		if (copy_from_user(&ver_info.u.link_info_v1,
+		if (copy_from_user(&link_info,
 			u64_to_user_ptr(k_ioctl->handle),
 			sizeof(struct cam_req_mgr_link_info))) {
 			return -EFAULT;
 		}
-		ver_info.version = VERSION_1;
-		rc = cam_req_mgr_link(&ver_info);
+
+		rc = cam_req_mgr_link(&link_info);
 		if (!rc)
 			if (copy_to_user(
 				u64_to_user_ptr(k_ioctl->handle),
-				&ver_info.u.link_info_v1,
+				&link_info,
 				sizeof(struct cam_req_mgr_link_info)))
 				rc = -EFAULT;
 		}
 		break;
-
-	case CAM_REQ_MGR_LINK_V2: {
-			struct cam_req_mgr_ver_info ver_info;
-
-			if (k_ioctl->size != sizeof(ver_info.u.link_info_v2))
-				return -EINVAL;
-
-			if (copy_from_user(&ver_info.u.link_info_v2,
-				u64_to_user_ptr(k_ioctl->handle),
-				sizeof(struct cam_req_mgr_link_info_v2))) {
-				return -EFAULT;
-			}
-			ver_info.version = VERSION_2;
-			rc = cam_req_mgr_link_v2(&ver_info);
-			if (!rc)
-				if (copy_to_user(
-					u64_to_user_ptr(k_ioctl->handle),
-					&ver_info.u.link_info_v2,
-					sizeof(struct
-						cam_req_mgr_link_info_v2)))
-					rc = -EFAULT;
-			}
-			break;
 
 	case CAM_REQ_MGR_UNLINK: {
 		struct cam_req_mgr_unlink_info unlink_info;
@@ -502,31 +501,6 @@ static long cam_private_ioctl(struct file *file, void *fh,
 			rc = -EINVAL;
 		}
 		break;
-
-	case CAM_REQ_MGR_REQUEST_DUMP: {
-		struct cam_dump_req_cmd cmd;
-
-		if (k_ioctl->size != sizeof(cmd))
-			return -EINVAL;
-
-		if (copy_from_user(&cmd,
-			u64_to_user_ptr(k_ioctl->handle),
-			sizeof(struct cam_dump_req_cmd))) {
-			rc = -EFAULT;
-			break;
-		}
-
-		rc = cam_req_mgr_dump_request(&cmd);
-		if (!rc)
-			if (copy_to_user(
-				u64_to_user_ptr(k_ioctl->handle),
-				&cmd, sizeof(struct cam_dump_req_cmd))) {
-				rc = -EFAULT;
-				break;
-			}
-		}
-		break;
-
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -614,18 +588,6 @@ void cam_register_subdev_fops(struct v4l2_file_operations *fops)
 	*fops = v4l2_subdev_fops;
 }
 EXPORT_SYMBOL(cam_register_subdev_fops);
-
-bool cam_req_mgr_is_open(void)
-{
-	bool crm_status;
-
-	mutex_lock(&g_dev.cam_lock);
-	crm_status = g_dev.open_cnt ? true : false;
-	mutex_unlock(&g_dev.cam_lock);
-
-	return crm_status;
-}
-EXPORT_SYMBOL(cam_req_mgr_is_open);
 
 int cam_register_subdev(struct cam_subdev *csd)
 {

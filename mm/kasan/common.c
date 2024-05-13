@@ -627,6 +627,7 @@ void kasan_report(unsigned long addr, size_t size, bool is_write, unsigned long 
 	user_access_restore(flags);
 }
 
+
 #ifdef CONFIG_MEMORY_HOTPLUG
 static bool shadow_mapped(unsigned long addr)
 {

@@ -22,7 +22,7 @@
 #include "gsi_reg.h"
 #include "gsi_emulation.h"
 
-#define GSI_CMD_TIMEOUT (5*HZ)
+#define GSI_CMD_TIMEOUT (1*HZ)
 #define GSI_START_CMD_TIMEOUT_MS 1000
 #define GSI_CMD_POLL_CNT 5
 #define GSI_STOP_CMD_TIMEOUT_MS 200
@@ -579,6 +579,11 @@ static void gsi_process_evt_re(struct gsi_evt_ctx *ctx,
 
 	evt = (struct gsi_xfer_compl_evt *)(ctx->ring.base_va +
 			ctx->ring.rp_local - ctx->ring.base);
+	gsi_ctx->ctx_channel[gsi_ctx->debug_chan] = ctx->id;
+	gsi_ctx->event_channel[gsi_ctx->debug_chan] = evt->chid;
+	gsi_ctx->debug_chan++;
+	if (gsi_ctx->debug_chan == MAX_DEBUG_CHAN_CNT)
+		gsi_ctx->debug_chan = 0;	
 	gsi_process_chan(evt, notify, callback);
 	gsi_incr_ring_rp(&ctx->ring);
 	/* recycle this element */
@@ -1269,10 +1274,9 @@ int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
 	__gsi_config_gen_irq(props->ee, ~0,
 		~GSI_EE_n_CNTXT_GSI_IRQ_CLR_GSI_BREAK_POINT_BMSK);
 
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
+	if (gsi_ctx->per.ver == GSI_VER_2_2)
 		__gsi_config_glob_irq(props->ee,
-				GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, 0);
-
+			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, 0);
 	gsi_writel(props->intr, gsi_ctx->base +
 			GSI_EE_n_CNTXT_INTSET_OFFS(gsi_ctx->per.ee));
 	/* set GSI_TOP_EE_n_CNTXT_MSI_BASE_LSB/MSB to 0 */
@@ -1312,7 +1316,7 @@ int gsi_register_device(struct gsi_per_props *props, unsigned long *dev_hdl)
 	}
 
 	*dev_hdl = (uintptr_t)gsi_ctx;
-
+	gsi_ctx->debug_chan = 0;
 	return GSI_STATUS_SUCCESS;
 }
 EXPORT_SYMBOL(gsi_register_device);
@@ -4216,7 +4220,7 @@ int gsi_halt_channel_ee(unsigned int chan_idx, unsigned int ee, int *code)
 	}
 
 	mutex_lock(&gsi_ctx->mlock);
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
+	if (gsi_ctx->per.ver == GSI_VER_2_2)
 		__gsi_config_glob_irq(gsi_ctx->per.ee,
 			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, ~0);
 	reinit_completion(&gsi_ctx->gen_ee_cmd_compl);
@@ -4264,7 +4268,7 @@ int gsi_halt_channel_ee(unsigned int chan_idx, unsigned int ee, int *code)
 	res = GSI_STATUS_SUCCESS;
 	*code = gsi_ctx->scratch.word0.s.generic_ee_cmd_return_code;
 free_lock:
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
+	if (gsi_ctx->per.ver == GSI_VER_2_2)
 		__gsi_config_glob_irq(gsi_ctx->per.ee,
 			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, 0);
 	mutex_unlock(&gsi_ctx->mlock);
@@ -4289,7 +4293,7 @@ int gsi_alloc_channel_ee(unsigned int chan_idx, unsigned int ee, int *code)
 		return gsi_alloc_ap_channel(chan_idx);
 
 	mutex_lock(&gsi_ctx->mlock);
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
+	if (gsi_ctx->per.ver == GSI_VER_2_2)
 		__gsi_config_glob_irq(gsi_ctx->per.ee,
 			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, ~0);
 	reinit_completion(&gsi_ctx->gen_ee_cmd_compl);
@@ -4339,7 +4343,7 @@ int gsi_alloc_channel_ee(unsigned int chan_idx, unsigned int ee, int *code)
 	res = GSI_STATUS_SUCCESS;
 	*code = gsi_ctx->scratch.word0.s.generic_ee_cmd_return_code;
 free_lock:
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
+	if (gsi_ctx->per.ver == GSI_VER_2_2)
 		__gsi_config_glob_irq(gsi_ctx->per.ee,
 			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, 0);
 	mutex_unlock(&gsi_ctx->mlock);
@@ -4377,9 +4381,6 @@ int gsi_enable_flow_control_ee(unsigned int chan_idx, unsigned int ee,
 	}
 
 	mutex_lock(&gsi_ctx->mlock);
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
-		__gsi_config_glob_irq(gsi_ctx->per.ee,
-			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, ~0);
 	reinit_completion(&gsi_ctx->gen_ee_cmd_compl);
 
 	/* invalidate the response */
@@ -4446,9 +4447,6 @@ int gsi_enable_flow_control_ee(unsigned int chan_idx, unsigned int ee,
 	}
 	*code = gsi_ctx->scratch.word0.s.generic_ee_cmd_return_code;
 free_lock:
-	if (gsi_ctx->per.ver == GSI_VER_2_2 || gsi_ctx->per.ver == GSI_VER_2_5)
-		__gsi_config_glob_irq(gsi_ctx->per.ee,
-			GSI_EE_n_CNTXT_GLOB_IRQ_EN_GP_INT1_BMSK, 0);
 	mutex_unlock(&gsi_ctx->mlock);
 
 	return res;
