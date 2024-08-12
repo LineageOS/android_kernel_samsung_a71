@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "3e1fb857_2b3e8dc0",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 26928
+      },
+      "writtenOn": "2024-08-12T13:16:26Z",
+      "side": 1,
+      "message": "The Change-Id/date seems to be fine now.",
+      "revId": "f8789ad88b9dd73a325058c6f4c0cd1ba7544601",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
