@@ -49,8 +49,6 @@
 #define RADIX_TREE_ENTRY_MASK		3UL
 #define RADIX_TREE_INTERNAL_NODE	1UL
 
-#define RADIX_TREE_INDIRECT_PTR		1
-
 /*
  * Most users of the radix tree store pointers but shmem/tmpfs stores swap
  * entries in the same tree.  They are marked as exceptional entries to
@@ -112,20 +110,23 @@ struct radix_tree_node {
 #define ROOT_TAG_SHIFT	(__GFP_BITS_SHIFT + 1)
 
 struct radix_tree_root {
+	spinlock_t		xa_lock;
 	gfp_t			gfp_mask;
 	struct radix_tree_node	__rcu *rnode;
 };
 
-#define RADIX_TREE_INIT(mask)	{					\
+#define RADIX_TREE_INIT(name, mask)	{				\
+	.xa_lock = __SPIN_LOCK_UNLOCKED(name.xa_lock),			\
 	.gfp_mask = (mask),						\
 	.rnode = NULL,							\
 }
 
 #define RADIX_TREE(name, mask) \
-	struct radix_tree_root name = RADIX_TREE_INIT(mask)
+	struct radix_tree_root name = RADIX_TREE_INIT(name, mask)
 
 #define INIT_RADIX_TREE(root, mask)					\
 do {									\
+	spin_lock_init(&(root)->xa_lock);				\
 	(root)->gfp_mask = (mask);					\
 	(root)->rnode = NULL;						\
 } while (0)
@@ -323,10 +324,6 @@ void radix_tree_clear_tags(struct radix_tree_root *, struct radix_tree_node *,
 			   void __rcu **slot);
 unsigned int radix_tree_gang_lookup(const struct radix_tree_root *,
 			void **results, unsigned long first_index,
-			unsigned int max_items);
-unsigned int
-radix_tree_gang_lookup_index(struct radix_tree_root *root, void **results,
-			unsigned long *indices, unsigned long first_index,
 			unsigned int max_items);
 unsigned int radix_tree_gang_lookup_slot(const struct radix_tree_root *,
 			void __rcu ***results, unsigned long *indices,

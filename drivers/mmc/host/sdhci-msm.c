@@ -1206,7 +1206,7 @@ static void sdhci_msm_set_mmc_drv_type(struct sdhci_host *host, u32 opcode,
 int sdhci_msm_execute_tuning(struct sdhci_host *host, u32 opcode)
 {
 	unsigned long flags;
-	int tuning_seq_cnt = 3;
+	int tuning_seq_cnt = 10;
 	u8 phase, *data_buf, tuned_phases[NUM_TUNING_PHASES], tuned_phase_cnt;
 	const u32 *tuning_block_pattern = tuning_block_64;
 	int size = sizeof(tuning_block_64); /* Tuning pattern size in bytes */
@@ -1291,7 +1291,6 @@ retry:
 		struct scatterlist sg;
 		struct mmc_command sts_cmd = {0};
 
-		msm_host->phase_on_tuning = phase;
 		/* set the phase in delay line hw block */
 		rc = msm_config_cm_dll_phase(host, phase);
 		if (rc)
@@ -1409,6 +1408,22 @@ retry:
 		sdhci_msm_set_mmc_drv_type(host, opcode, 0);
 
 	if (tuned_phase_cnt) {
+		if (tuned_phase_cnt == ARRAY_SIZE(tuned_phases)) {
+			/*
+			 * All phases valid is _almost_ as bad as no phases
+			 * valid.  Probably all phases are not really reliable
+			 * but we didn't detect where the unreliable place is.
+			 * That means we'll essentially be guessing and hoping
+			 * we get a good phase.  Better to try a few times.
+			 */
+			dev_dbg(mmc_dev(mmc), "%s: All phases valid; try again\n",
+				mmc_hostname(mmc));
+			if (--tuning_seq_cnt) {
+				tuned_phase_cnt = 0;
+				goto retry;
+			}
+		}
+
 		rc = msm_find_most_appropriate_phase(host, tuned_phases,
 							tuned_phase_cnt);
 		if (rc < 0)
@@ -1423,19 +1438,9 @@ retry:
 		rc = msm_config_cm_dll_phase(host, phase);
 		if (rc)
 			goto kfree;
-		if (msm_host->saved_tuning_phase != phase) {
-			int i = 0;
-			char phase_result[17] = { 0, };
-
-			pr_err("%s: %s: finally setting the tuning phase from %d to %d\n",
-					mmc_hostname(mmc), __func__,
-					msm_host->saved_tuning_phase, phase);
-			for (i = 0; i < tuned_phase_cnt; i++)
-				snprintf(phase_result + i, sizeof(phase_result) - i, "%1x", tuned_phases[i]);
-			pr_err("%s\n", phase_result);
-
-			msm_host->saved_tuning_phase = phase;
-		}
+		msm_host->saved_tuning_phase = phase;
+		pr_debug("%s: %s: finally setting the tuning phase to %d\n",
+				mmc_hostname(mmc), __func__, phase);
 	} else {
 		if (--tuning_seq_cnt)
 			goto retry;

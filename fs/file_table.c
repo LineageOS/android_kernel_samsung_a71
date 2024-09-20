@@ -26,7 +26,6 @@
 #include <linux/hardirq.h>
 #include <linux/task_work.h>
 #include <linux/ima.h>
-#include <linux/task_integrity.h>
 #include <linux/swap.h>
 
 #include <linux/atomic.h>
@@ -341,7 +340,6 @@ static void __fput(struct file *file)
 		if (file->f_op->fasync)
 			file->f_op->fasync(-1, file, 0);
 	}
-	five_file_free(file);
 	ima_file_free(file);
 	if (file->f_op->release)
 		file->f_op->release(inode, file);
@@ -405,9 +403,9 @@ void flush_delayed_fput_wait(void)
 	flush_delayed_work(&delayed_fput_work);
 }
 
-void fput(struct file *file)
+void fput_many(struct file *file, unsigned int refs)
 {
-	if (atomic_long_dec_and_test(&file->f_count)) {
+	if (atomic_long_sub_and_test(refs, &file->f_count)) {
 		struct task_struct *task = current;
 
 		if (likely(!in_interrupt() && !(task->flags & PF_KTHREAD))) {
@@ -424,6 +422,11 @@ void fput(struct file *file)
 		if (llist_add(&file->f_u.fu_llist, &delayed_fput_list))
 			schedule_delayed_work(&delayed_fput_work, 1);
 	}
+}
+
+void fput(struct file *file)
+{
+	fput_many(file, 1);
 }
 
 /*

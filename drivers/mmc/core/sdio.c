@@ -711,6 +711,8 @@ try_again:
 		mmc_host_clk_release(host);
 	}
 
+	card->ocr = ocr_card;
+
 	/*
 	 * If the host and card support UHS-I mode request the card
 	 * to switch to 1.8V signaling level.  No 1.8v signalling if
@@ -723,7 +725,6 @@ try_again:
 	 * to make sure which speed mode should work.
 	 */
 	if (!powered_resume && (rocr & ocr & R4_18V_PRESENT)) {
-		err = mmc_set_uhs_voltage(host, ocr_card);
 		if (err == -EAGAIN) {
 			mmc_sdio_resend_if_cond(host, card);
 			retries--;
@@ -835,7 +836,7 @@ try_again:
 
 		card = oldcard;
 	}
-	card->ocr = ocr_card;
+
 	mmc_fixup_device(card, sdio_fixup_methods);
 
 	if (card->type == MMC_TYPE_SD_COMBO) {

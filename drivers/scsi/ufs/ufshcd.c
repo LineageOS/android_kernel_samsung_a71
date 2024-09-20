@@ -475,6 +475,8 @@ static inline bool ufshcd_is_valid_pm_lvl(int lvl)
 
 static struct ufs_dev_fix ufs_fixups[] = {
 	/* UFS cards deviations table */
+	UFS_FIX(UFS_VENDOR_MICRON, UFS_ANY_MODEL,
+		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
 	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
 		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
 	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
@@ -2400,8 +2402,16 @@ static int ufshcd_devfreq_target(struct device *dev,
 	}
 	spin_unlock_irqrestore(hba->host->host_lock, irq_flags);
 
+	pm_runtime_get_noresume(hba->dev);
+	if (!pm_runtime_active(hba->dev)) {
+		pm_runtime_put_noidle(hba->dev);
+		ret = -EAGAIN;
+		goto out;
+	}
 	start = ktime_get();
 	ret = ufshcd_devfreq_scale(hba, scale_up);
+	pm_runtime_put(hba->dev);
+
 	trace_ufshcd_profile_clk_scaling(dev_name(hba->dev),
 		(scale_up ? "up" : "down"),
 		ktime_to_us(ktime_sub(ktime_get(), start)), ret);
@@ -2413,7 +2423,6 @@ out:
 
 	return ret;
 }
-
 
 static int ufshcd_devfreq_get_dev_status(struct device *dev,
 		struct devfreq_dev_status *stat)
@@ -2620,6 +2629,7 @@ unblock_reqs:
 int ufshcd_hold(struct ufs_hba *hba, bool async)
 {
 	int rc = 0;
+	bool flush_result;
 	unsigned long flags;
 
 	if (!ufshcd_is_clkgating_allowed(hba))
@@ -2651,7 +2661,9 @@ start:
 				break;
 			}
 			spin_unlock_irqrestore(hba->host->host_lock, flags);
-			flush_work(&hba->clk_gating.ungate_work);
+			flush_result = flush_work(&hba->clk_gating.ungate_work);
+			if (hba->clk_gating.is_suspended && !flush_result)
+				goto out;
 			spin_lock_irqsave(hba->host->host_lock, flags);
 			if (hba->ufshcd_state == UFSHCD_STATE_OPERATIONAL)
 				goto start;
@@ -5963,7 +5975,7 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		 * Make sure UIC command completion interrupt is disabled before
 		 * issuing UIC command.
 		 */
-		wmb();
+		ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 		reenable_intr = true;
 	}
 	ret = __ufshcd_send_uic_cmd(hba, cmd, false);
@@ -8292,21 +8304,6 @@ out:
 	pm_runtime_put_sync(hba->dev);
 }
 
-static void ufshcd_fatal_mode_handler(struct work_struct *work)
-{
-	struct ufs_hba *hba;
-
-	hba = container_of(work, struct ufs_hba, fatal_mode_work);
-
-	ufshcd_scsi_block_requests(hba);
-
-	dev_err(hba->dev, "fatal mode %04x.\n", hba->dev_info.w_manufacturer_id);
-	if (hba->dev_info.w_manufacturer_id == UFS_VENDOR_TOSHIBA)
-		UFS_Toshiba_K2_query_fatal_mode(hba);
-
-	ufshcd_scsi_unblock_requests(hba);
-}
-
 /**
  * ufshcd_update_uic_error - check and set fatal UIC error flags.
  * @hba: per-adapter instance
@@ -8544,7 +8541,7 @@ static irqreturn_t ufshcd_sl_intr(struct ufs_hba *hba, u32 intr_status)
  */
 static irqreturn_t ufshcd_intr(int irq, void *__hba)
 {
-	u32 intr_status, enabled_intr_status;
+	u32 intr_status, enabled_intr_status = 0;
 	irqreturn_t retval = IRQ_NONE;
 	struct ufs_hba *hba = __hba;
 	int retries = hba->nutrs;
@@ -8559,7 +8556,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 	 * read, make sure we handle them by checking the interrupt status
 	 * again in a loop until we process all of the reqs before returning.
 	 */
-	do {
+	while (intr_status && retries--) {
 		enabled_intr_status =
 			intr_status & ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 		if (intr_status)
@@ -8568,7 +8565,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 			retval |= ufshcd_sl_intr(hba, enabled_intr_status);
 
 		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
-	} while (intr_status && --retries);
+	}
 
 	if (retval == IRQ_NONE) {
 		dev_err(hba->dev, "%s: Unhandled interrupt 0x%08x\n",
@@ -8708,20 +8705,17 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host;
 	struct ufs_hba *hba;
-	unsigned int tag;
 	u32 pos;
 	int err;
-	u8 resp = 0xF;
-	struct ufshcd_lrb *lrbp;
+	u8 resp = 0xF, lun;
 	unsigned long flags;
 
 	host = cmd->device->host;
 	hba = shost_priv(host);
-	tag = cmd->request->tag;
 
 	ufshcd_print_cmd_log(hba);
-	lrbp = &hba->lrb[tag];
-	err = ufshcd_issue_tm_cmd(hba, lrbp->lun, 0, UFS_LOGICAL_RESET, &resp);
+	lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
+	err = ufshcd_issue_tm_cmd(hba, lun, 0, UFS_LOGICAL_RESET, &resp);
 	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
 		if (!err)
 			err = resp;
@@ -8730,7 +8724,7 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 
 	/* clear the commands that were pending for corresponding LUN */
 	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
-		if (hba->lrb[pos].lun == lrbp->lun) {
+		if (hba->lrb[pos].lun == lun) {
 			err = ufshcd_clear_cmd(hba, pos);
 			if (err)
 				break;
@@ -8743,7 +8737,6 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 out:
 	hba->req_abort_count = 0;
 	if (!err) {
-		dev_info(hba->dev, "%s: LU reset succeeded\n", __func__);
 		err = SUCCESS;
 	} else {
 		dev_err(hba->dev, "%s: failed with err %d\n", __func__, err);
@@ -8916,7 +8909,7 @@ static int ufshcd_abort(struct scsi_cmnd *cmd)
 			/* command completed already */
 			dev_err(hba->dev, "%s: cmd at tag %d successfully cleared from DB.\n",
 				__func__, tag);
-			goto out;
+			goto cleanup;
 		} else {
 			dev_err(hba->dev,
 				"%s: no response from device. tag = %d, err %d\n",
@@ -8956,6 +8949,7 @@ static int ufshcd_abort(struct scsi_cmnd *cmd)
 		goto out;
 	}
 
+cleanup:
 	scsi_dma_unmap(cmd);
 
 	spin_lock_irqsave(host->host_lock, flags);
@@ -12573,13 +12567,6 @@ static void ufshcd_shutdown_clkscaling(struct ufs_hba *hba)
 int ufshcd_shutdown(struct ufs_hba *hba)
 {
 	int ret = 0;
-#if defined(SEC_UFS_ERROR_COUNT)
-	struct SEC_UFS_counting *err_info = &(hba->SEC_err_info);
-	struct SEC_UFS_op_count *op_cnt = &(err_info->op_count);
-	struct SEC_UFS_UIC_err_count *uic_err_cnt = &(err_info->UIC_err_count);
-	struct SEC_UFS_UTP_count *utp_err = &(err_info->UTP_count);
-	struct SEC_UFS_QUERY_count *query_cnt = &(err_info->query_count);
-#endif
 
 	if (!hba->is_powered)
 		goto out;
@@ -12611,15 +12598,6 @@ out:
 	if (ret)
 		dev_err(hba->dev, "%s failed, err %d\n", __func__, ret);
 	/* allow force shutdown even in case of errors */
-#if defined(SEC_UFS_ERROR_COUNT)
-	dev_err(hba->dev, "Count: %d UIC: %d  UTP:%d QUERY: %d\n",
-			op_cnt->HW_RESET_count,
-			uic_err_cnt->UIC_err,
-			utp_err->UTP_err,
-			query_cnt->Query_err);
-#endif
-	dev_err(hba->dev, "Sense Key: medium: %d, hw: %d\n",
-			hba->host->medium_err_cnt, hba->host->hw_err_cnt);
 	return 0;
 }
 EXPORT_SYMBOL(ufshcd_shutdown);
@@ -12845,6 +12823,13 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	struct Scsi_Host *host = hba->host;
 	struct device *dev = hba->dev;
 
+	/*
+	 * dev_set_drvdata() must be called before any callbacks are registered
+	 * that use dev_get_drvdata() (frequency scaling, clock scaling, hwmon,
+	 * sysfs).
+	 */
+	dev_set_drvdata(dev, hba);
+
 	if (!mmio_base) {
 		dev_err(hba->dev,
 		"Invalid memory reference for mmio_base is NULL\n");
@@ -12907,7 +12892,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	host->unique_id = host->host_no;
 	host->max_cmd_len = MAX_CDB_SIZE;
 	host->set_dbd_for_caching = 1;
-	host->by_ufs = 1;
 
 	hba->max_pwr_info.is_valid = false;
 
@@ -12920,18 +12904,12 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	INIT_WORK(&hba->eeh_work, ufshcd_exception_event_handler);
 	INIT_WORK(&hba->card_detect_work, ufshcd_card_detect_handler);
 	INIT_WORK(&hba->rls_work, ufshcd_rls_handler);
-	INIT_WORK(&hba->fatal_mode_work, ufshcd_fatal_mode_handler);
 
 	/* Initialize UIC command mutex */
 	mutex_init(&hba->uic_cmd_mutex);
 
 	/* Initialize mutex for device management commands */
 	mutex_init(&hba->dev_cmd.lock);
-
-#if IS_ENABLED(CONFIG_BLK_TURBO_WRITE)
-	/* Initialize TW ctrl mutex */
-	mutex_init(&hba->tw_ctrl_mutex);
-#endif
 
 	init_rwsem(&hba->lock);
 
@@ -12953,7 +12931,7 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	 * Make sure that UFS interrupts are disabled and any pending interrupt
 	 * status is cleared before registering UFS interrupt handler.
 	 */
-	mb();
+	ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 
 	/* IRQ registration */
 	err = devm_request_irq(dev, irq, ufshcd_intr, IRQF_SHARED,
@@ -12988,9 +12966,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 		dev_err(hba->dev, "crypto setup failed\n");
 		goto out_remove_scsi_host;
 	}
-
-	/* reset the SEC error info */
-	memset(&(hba->SEC_err_info), 0, sizeof(struct SEC_UFS_counting));
 
 	/* Host controller enable */
 	err = ufshcd_hba_enable(hba);
@@ -13030,12 +13005,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 		hba->spm_lvl = ufs_get_desired_pm_lvl_for_dev_link_state(
 							UFS_SLEEP_PWR_MODE,
 							UIC_LINK_HIBERN8_STATE);
-#if defined(CONFIG_SCSI_UFS_TEST_MODE)
-	dev_info(hba->dev, "UFS test mode enabled\n");
-#endif
-	/* init ufs_sec_debug function */
-	ufs_sec_send_errinfo(hba);
-	ufs_debug_func = ufs_sec_send_errinfo;
 
 	/* Hold auto suspend until async scan completes */
 	pm_runtime_get_sync(dev);
@@ -13043,10 +13012,12 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufshcd_init_latency_hist(hba);
 
 	/*
-	 * The device-initialize-sequence hasn't been invoked yet.
-	 * Set the device to power-off state
+	 * We are assuming that device wasn't put in sleep/power-down
+	 * state exclusively during the boot stage before kernel.
+	 * This assumption helps avoid doing link startup twice during
+	 * ufshcd_probe_hba().
 	 */
-	ufshcd_set_ufs_dev_poweroff(hba);
+	ufshcd_set_ufs_dev_active(hba);
 
 	ufshcd_cmd_log_init(hba);
 
@@ -13074,5 +13045,6 @@ EXPORT_SYMBOL_GPL(ufshcd_init);
 MODULE_AUTHOR("Santosh Yaragnavi <santosh.sy@samsung.com>");
 MODULE_AUTHOR("Vinayak Holikatti <h.vinayak@samsung.com>");
 MODULE_DESCRIPTION("Generic UFS host controller driver Core");
+MODULE_SOFTDEP("pre: governor_simpleondemand");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(UFSHCD_DRIVER_VERSION);

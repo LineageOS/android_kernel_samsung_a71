@@ -154,7 +154,6 @@ module_param_named(sleep_disabled, sleep_disabled, bool, 0664);
 
 #ifdef CONFIG_SEC_PM_DEBUG
 extern void sec_gpio_debug_print(void);
-extern void sec_clock_debug_print_enabled(void);
 extern void sec_debug_print_sleep_time(void);
 static int msm_pm_sleep_sec_debug;
 module_param_named(secdebug,
@@ -1813,7 +1812,6 @@ static int lpm_suspend_prepare(void)
 
 #ifdef CONFIG_SEC_PM
 	regulator_showall_enabled();
-	sec_clock_debug_print_enabled();
 
 	debug_masterstats_show("entry");
 	debug_rpmstats_show("entry");

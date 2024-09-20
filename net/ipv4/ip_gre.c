@@ -429,14 +429,12 @@ static void __gre_xmit(struct sk_buff *skb, struct net_device *dev,
 		       __be16 proto)
 {
 	struct ip_tunnel *tunnel = netdev_priv(dev);
-
-	if (tunnel->parms.o_flags & TUNNEL_SEQ)
-		tunnel->o_seqno++;
+	__be16 flags = tunnel->parms.o_flags;
 
 	/* Push GRE header. */
 	gre_build_header(skb, tunnel->tun_hlen,
-			 tunnel->parms.o_flags, proto, tunnel->parms.o_key,
-			 htonl(tunnel->o_seqno));
+			 flags, proto, tunnel->parms.o_key,
+			 (flags & TUNNEL_SEQ) ? htonl(tunnel->o_seqno++) : 0);
 
 	ip_tunnel_xmit(skb, dev, tnl_params, tnl_params->protocol);
 }
@@ -444,8 +442,7 @@ static void __gre_xmit(struct sk_buff *skb, struct net_device *dev,
 static int gre_handle_offloads(struct sk_buff *skb, bool csum)
 {
 	if (csum && skb_checksum_start(skb) < skb->data)
-	return -EINVAL;
-
+		return -EINVAL;
 	return iptunnel_handle_offloads(skb, csum ? SKB_GSO_GRE_CSUM : SKB_GSO_GRE);
 }
 
@@ -642,6 +639,9 @@ static netdev_tx_t ipgre_xmit(struct sk_buff *skb,
 	struct ip_tunnel *tunnel = netdev_priv(dev);
 	const struct iphdr *tnl_params;
 
+	if (!pskb_inet_may_pull(skb))
+		goto free_skb;
+
 	if (tunnel->collect_md) {
 		gre_fb_xmit(skb, dev, skb->protocol);
 		return NETDEV_TX_OK;
@@ -731,6 +731,9 @@ static netdev_tx_t erspan_xmit(struct sk_buff *skb,
 	struct ip_tunnel *tunnel = netdev_priv(dev);
 	bool truncate = false;
 
+	if (!pskb_inet_may_pull(skb))
+		goto free_skb;
+
 	if (tunnel->collect_md) {
 		erspan_fb_xmit(skb, dev, skb->protocol);
 		return NETDEV_TX_OK;
@@ -763,6 +766,9 @@ static netdev_tx_t gre_tap_xmit(struct sk_buff *skb,
 				struct net_device *dev)
 {
 	struct ip_tunnel *tunnel = netdev_priv(dev);
+
+	if (!pskb_inet_may_pull(skb))
+		goto free_skb;
 
 	if (tunnel->collect_md) {
 		gre_fb_xmit(skb, dev, htons(ETH_P_TEB));

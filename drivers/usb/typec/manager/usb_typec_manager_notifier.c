@@ -45,7 +45,6 @@
 
 /* dwc3 irq storm patch */
 /* need to check dwc3 link state during dcd time out case */
-extern int dwc3_gadget_get_cmply_link_state_wrapper(void);
 #define DEBUG
 #define SET_MANAGER_NOTIFIER_BLOCK(nb, fn, dev) do {	\
 		(nb)->notifier_call = (fn);		\
@@ -519,8 +518,6 @@ static int manager_external_notifier_notification(struct notifier_block *nb,
 static void manager_cable_type_check_work(struct work_struct *work)
 {
 	int dwc3_link_check = 0;
-
-	dwc3_link_check= dwc3_gadget_get_cmply_link_state_wrapper();
 
 	if ((typec_manager.ccic_drp_state != USB_STATUS_NOTIFY_ATTACH_UFP) ||
 		typec_manager.is_MPSM || dwc3_link_check == 1 ) {

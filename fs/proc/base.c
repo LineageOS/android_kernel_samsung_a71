@@ -858,7 +858,7 @@ static ssize_t mem_rw(struct file *file, char __user *buf,
 	flags = FOLL_FORCE | (write ? FOLL_WRITE : 0);
 
 	while (count > 0) {
-		int this_len = min_t(int, count, PAGE_SIZE);
+		size_t this_len = min_t(size_t, count, PAGE_SIZE);
 
 		if (write && copy_from_user(page, buf, this_len)) {
 			copied = -EFAULT;
@@ -1070,16 +1070,9 @@ static unsigned long period_max_cnt;
 
 static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 {
-	static DEFINE_MUTEX(oom_adj_mutex);
 	struct mm_struct *mm = NULL;
 	struct task_struct *task;
 	int err = 0;
-	int mm_users;
-
-#if DEBUG_SET_OOM_ADJ_TIME
-	unsigned long start_set_oom_adj = jiffies;
-	unsigned long end_set_oom_adj;
-#endif
 
 	task = get_proc_task(file_inode(file));
 	if (!task)
@@ -1107,18 +1100,6 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		}
 	}
 
-#if DEBUG_SET_OOM_ADJ_TIME
-	if (time_after(jiffies, start_time_of_period + (10 * HZ))) {
-		start_time_of_period = jiffies;
-		if (period_max_cnt < period_cnt)
-			period_max_cnt = period_cnt;
-
-		set_oom_adj_cnt += period_cnt;
-		period_cnt = 0;
-	}
-	period_cnt++;
-#endif
-
 	/*
 	 * Make sure we will check other processes sharing the mm if this is
 	 * not vfrok which wants its own oom_score_adj.
@@ -1128,8 +1109,7 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		struct task_struct *p = find_lock_task_mm(task);
 
 		if (p) {
-			mm_users = atomic_read(&p->mm->mm_users);
-			if (mm_users > 1 && mm_users > get_nr_threads(p)) {
+			if (test_bit(MMF_MULTIPROCESS, &p->mm->flags)) {
 				mm = p->mm;
 				mmgrab(mm);
 			}
@@ -1145,12 +1125,6 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 	if (mm) {
 		struct task_struct *p;
 
-#if DEBUG_SET_OOM_ADJ_TIME
-		unsigned long start_task_lock, end_task_lock;
-
-		end_set_oom_adj = jiffies;
-		set_oom_adj_loop_cnt++;
-#endif
 		rcu_read_lock();
 		for_each_process(p) {
 			if (same_thread_group(task, p))
@@ -1160,17 +1134,7 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 			if (p->flags & PF_KTHREAD || is_global_init(p))
 				continue;
 
-#if DEBUG_SET_OOM_ADJ_TIME
-			start_task_lock = jiffies;
 			task_lock(p);
-			end_task_lock = jiffies;
-
-			if (end_task_lock - start_task_lock > task_lock_max_time)
-				task_lock_max_time = end_task_lock - start_task_lock;
-#else
-			task_lock(p);
-#endif
-
 			if (!p->vfork_done && process_shares_mm(p, mm)) {
 				p->signal->oom_score_adj = oom_adj;
 				if (!legacy && has_capability_noaudit(current, CAP_SYS_RESOURCE))
@@ -1182,12 +1146,6 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		mmdrop(mm);
 	}
 err_unlock:
-#if DEBUG_SET_OOM_ADJ_TIME
-	end_set_oom_adj = jiffies;
-	if (end_set_oom_adj - start_set_oom_adj > set_oom_adj_max_time)
-		set_oom_adj_max_time = end_set_oom_adj - start_set_oom_adj;
-#endif
-
 	mutex_unlock(&oom_adj_mutex);
 	put_task_struct(task);
 	return err;
@@ -2797,6 +2755,13 @@ out:
 }
 
 #ifdef CONFIG_SECURITY
+static int proc_pid_attr_open(struct inode *inode, struct file *file)
+{
+	file->private_data = NULL;
+	__mem_open(inode, file, PTRACE_MODE_READ_FSCREDS);
+	return 0;
+}
+
 static ssize_t proc_pid_attr_read(struct file * file, char __user * buf,
 				  size_t count, loff_t *ppos)
 {
@@ -2825,6 +2790,10 @@ static ssize_t proc_pid_attr_write(struct file * file, const char __user * buf,
 	void *page;
 	ssize_t length;
 	struct task_struct *task = get_proc_task(inode);
+
+	/* A task may only write when it was the opener. */
+	if (file->private_data != current->mm)
+		return -EPERM;
 
 	length = -ESRCH;
 	if (!task)
@@ -2866,9 +2835,11 @@ out_no_task:
 }
 
 static const struct file_operations proc_pid_attr_operations = {
+	.open		= proc_pid_attr_open,
 	.read		= proc_pid_attr_read,
 	.write		= proc_pid_attr_write,
 	.llseek		= generic_file_llseek,
+	.release	= mem_release,
 };
 
 static const struct pid_entry attr_dir_stuff[] = {
@@ -4054,7 +4025,8 @@ static int proc_tid_comm_permission(struct inode *inode, int mask)
 }
 
 static const struct inode_operations proc_tid_comm_inode_operations = {
-		.permission = proc_tid_comm_permission,
+		.setattr	= proc_setattr,
+		.permission	= proc_tid_comm_permission,
 };
 
 /*

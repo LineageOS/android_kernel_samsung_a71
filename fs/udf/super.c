@@ -113,16 +113,10 @@ struct logicalVolIntegrityDescImpUse *udf_sb_lvidiu(struct super_block *sb)
 		return NULL;
 	lvid = (struct logicalVolIntegrityDesc *)UDF_SB(sb)->s_lvid_bh->b_data;
 	partnum = le32_to_cpu(lvid->numOfPartitions);
-	if ((sb->s_blocksize - sizeof(struct logicalVolIntegrityDescImpUse) -
-	     offsetof(struct logicalVolIntegrityDesc, impUse)) /
-	     (2 * sizeof(uint32_t)) < partnum) {
-		udf_err(sb, "Logical volume integrity descriptor corrupted "
-			"(numOfPartitions = %u)!\n", partnum);
-		return NULL;
-	}
 	/* The offset is to skip freeSpaceTable and sizeTable arrays */
 	offset = partnum * 2 * sizeof(uint32_t);
-	return (struct logicalVolIntegrityDescImpUse *)&(lvid->impUse[offset]);
+	return (struct logicalVolIntegrityDescImpUse *)
+					(((uint8_t *)(lvid + 1)) + offset);
 }
 
 /* UDF filesystem type */
@@ -893,6 +887,9 @@ static int udf_load_pvoldesc(struct super_block *sb, sector_t block)
 	struct buffer_head *bh;
 	uint16_t ident;
 	int ret = -ENOMEM;
+#ifdef UDFFS_DEBUG
+	struct timestamp *ts;
+#endif
 
 	outstr = kmalloc(128, GFP_NOFS);
 	if (!outstr)
@@ -911,15 +908,15 @@ static int udf_load_pvoldesc(struct super_block *sb, sector_t block)
 
 	pvoldesc = (struct primaryVolDesc *)bh->b_data;
 
-	if (udf_disk_stamp_to_time(&UDF_SB(sb)->s_record_time,
-			      pvoldesc->recordingDateAndTime)) {
+	udf_disk_stamp_to_time(&UDF_SB(sb)->s_record_time,
+			      pvoldesc->recordingDateAndTime);
 #ifdef UDFFS_DEBUG
-		struct timestamp *ts = &pvoldesc->recordingDateAndTime;
-		udf_debug("recording time %04u/%02u/%02u %02u:%02u (%x)\n",
-			  le16_to_cpu(ts->year), ts->month, ts->day, ts->hour,
-			  ts->minute, le16_to_cpu(ts->typeAndTimezone));
+	ts = &pvoldesc->recordingDateAndTime;
+	udf_debug("recording time %04u/%02u/%02u %02u:%02u (%x)\n",
+		  le16_to_cpu(ts->year), ts->month, ts->day, ts->hour,
+		  ts->minute, le16_to_cpu(ts->typeAndTimezone));
 #endif
-	}
+
 
 	ret = udf_dstrCS0toUTF8(outstr, 31, pvoldesc->volIdent, 32);
 	if (ret < 0) {
@@ -1385,6 +1382,12 @@ static int udf_load_sparable_map(struct super_block *sb,
 			(int)spm->numSparingTables);
 		return -EIO;
 	}
+	if (le32_to_cpu(spm->sizeSparingTable) > sb->s_blocksize) {
+		udf_err(sb, "error loading logical volume descriptor: "
+			"Too big sparing table size (%u)\n",
+			le32_to_cpu(spm->sizeSparingTable));
+		return -EIO;
+	}
 
 	for (i = 0; i < spm->numSparingTables; i++) {
 		loc = le32_to_cpu(spm->locSparingTable[i]);
@@ -1559,6 +1562,7 @@ static void udf_load_logicalvolint(struct super_block *sb, struct kernel_extent_
 	struct udf_sb_info *sbi = UDF_SB(sb);
 	struct logicalVolIntegrityDesc *lvid;
 	int indirections = 0;
+	u32 parts, impuselen;
 
 	while (++indirections <= UDF_MAX_LVID_NESTING) {
 		final_bh = NULL;
@@ -1585,15 +1589,27 @@ static void udf_load_logicalvolint(struct super_block *sb, struct kernel_extent_
 
 		lvid = (struct logicalVolIntegrityDesc *)final_bh->b_data;
 		if (lvid->nextIntegrityExt.extLength == 0)
-			return;
+			goto check;
 
 		loc = leea_to_cpu(lvid->nextIntegrityExt);
 	}
 
 	udf_warn(sb, "Too many LVID indirections (max %u), ignoring.\n",
 		UDF_MAX_LVID_NESTING);
+out_err:
 	brelse(sbi->s_lvid_bh);
 	sbi->s_lvid_bh = NULL;
+	return;
+check:
+	parts = le32_to_cpu(lvid->numOfPartitions);
+	impuselen = le32_to_cpu(lvid->lengthOfImpUse);
+	if (parts >= sb->s_blocksize || impuselen >= sb->s_blocksize ||
+	    sizeof(struct logicalVolIntegrityDesc) + impuselen +
+	    2 * parts * sizeof(u32) > sb->s_blocksize) {
+		udf_warn(sb, "Corrupted LVID (parts=%u, impuselen=%u), "
+			 "ignoring.\n", parts, impuselen);
+		goto out_err;
+	}
 }
 
 

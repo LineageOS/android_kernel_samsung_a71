@@ -456,9 +456,6 @@ static int rc_flush_ratree(struct rc_pool *rcpool,
 	unsigned long indices[FREE_BATCH];
 
 	do {
-		count = radix_tree_gang_lookup_index(&rbnode->ratree,
-				(void **)results, indices, index, FREE_BATCH);
-
 		for (i = 0; i < count; i++) {
 			if (results[i] == ZERO_HANDLE) {
 				handle = radix_tree_delete(&rbnode->ratree,

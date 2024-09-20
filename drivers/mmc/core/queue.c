@@ -220,17 +220,6 @@ void mmc_cmdq_setup_queue(struct mmc_queue *mq, struct mmc_card *card)
 	blk_queue_max_segments(mq->queue, host->max_segs);
 }
 
-static struct scatterlist *mmc_alloc_sg(int sg_len, gfp_t gfp)
-{
-	struct scatterlist *sg;
-
-	sg = kmalloc_array(sg_len, sizeof(*sg), gfp);
-	if (sg)
-		sg_init_table(sg, sg_len);
-
-	return sg;
-}
-
 int mmc_cmdq_init(struct mmc_queue *mq, struct mmc_card *card)
 {
 	int ret = 0;
@@ -356,6 +345,17 @@ static void mmc_request_fn(struct request_queue *q)
 
 	if (mq->asleep)
 		wake_up_process(mq->thread);
+}
+
+static struct scatterlist *mmc_alloc_sg(int sg_len, gfp_t gfp)
+{
+	struct scatterlist *sg;
+
+	sg = kmalloc_array(sg_len, sizeof(*sg), gfp);
+	if (sg)
+		sg_init_table(sg, sg_len);
+
+	return sg;
 }
 
 /**
