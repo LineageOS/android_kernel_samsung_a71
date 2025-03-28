@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "b16923b0_ab1fee5f",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 26928
+      },
+      "writtenOn": "2025-03-28T16:24:13Z",
+      "side": 1,
+      "message": "We need to find the real value of mask bl level for our device to fix it properly.",
+      "revId": "e5ed378649682aca8a2135914f8c805bffc1aa6b",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
