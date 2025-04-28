@@ -264,12 +264,12 @@ static ssize_t secure_ownership_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "1");
 }
 
-static ssize_t sec_ts_fod_pressed_show(struct device *dev,
+static ssize_t sec_ts_scrub_pos_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct sec_ts_data *data = dev_get_drvdata(dev);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", data->fod_pressed);
+	return snprintf(buf, PAGE_SIZE, "%u\n", data->scrub_pos);
 }
 
 static DEVICE_ATTR(secure_touch_enable, (S_IRUGO | S_IWUSR | S_IWGRP),
@@ -278,13 +278,13 @@ static DEVICE_ATTR(secure_touch, S_IRUGO, secure_touch_show, NULL);
 
 static DEVICE_ATTR(secure_ownership, S_IRUGO, secure_ownership_show, NULL);
 
-static DEVICE_ATTR(fod_pressed, S_IRUGO, sec_ts_fod_pressed_show, NULL);
+static DEVICE_ATTR(scrub_pos, S_IRUGO, sec_ts_scrub_pos_show, NULL);
 
 static struct attribute *secure_attr[] = {
 	&dev_attr_secure_touch_enable.attr,
 	&dev_attr_secure_touch.attr,
 	&dev_attr_secure_ownership.attr,
-	&dev_attr_fod_pressed.attr,
+	&dev_attr_scrub_pos.attr,
 	NULL,
 };
 
@@ -1590,14 +1590,14 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 					if (p_gesture_status->gesture_id == SEC_GESTURE_ID_FOD_LONG || p_gesture_status->gesture_id == SEC_GESTURE_ID_FOD_NORMAL) {
 						ts->scrub_id = SPONGE_EVENT_TYPE_FOD;
 						input_info(true, &ts->client->dev, "%s: FOD: %s\n", __func__, p_gesture_status->gesture_id ? "normal" : "long");
-					ts->fod_pressed = true;
-					sysfs_notify(&ts->input_dev->dev.kobj, NULL, "fod_pressed");
+					ts->scrub_pos = true;
+					sysfs_notify(&ts->input_dev->dev.kobj, NULL, "scrub_pos");
 					} else if (p_gesture_status->gesture_id == SEC_GESTURE_ID_FOD_RELEASE) {
 						ts->scrub_id = SPONGE_EVENT_TYPE_FOD_RELEASE;
 						input_info(true, &ts->client->dev, "%s: FOD release\n", __func__);
 						input_report_key(ts->input_dev, KEY_BLACK_UI_GESTURE, 1);
-					ts->fod_pressed = false;
-					sysfs_notify(&ts->input_dev->dev.kobj, NULL, "fod_pressed");
+					ts->scrub_pos = false;
+					sysfs_notify(&ts->input_dev->dev.kobj, NULL, "scrub_pos");
 					} else if (p_gesture_status->gesture_id == SEC_GESTURE_ID_FOD_OUT) {
 						ts->scrub_id = SPONGE_EVENT_TYPE_FOD_OUT;
 						input_info(true, &ts->client->dev, "%s: FOD OUT\n", __func__);
