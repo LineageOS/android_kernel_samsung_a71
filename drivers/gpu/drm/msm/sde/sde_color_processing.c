@@ -642,13 +642,27 @@ static void sde_cp_crtc_setfeature(struct sde_cp_node *prop_node,
 	bool feature_enabled = false;
 	int ret = 0;
 	struct sde_ad_hw_cfg ad_cfg;
+	struct drm_crtc *drm_crtc = &sde_crtc->base;
+	struct sde_crtc_state *cstate = to_sde_crtc_state(drm_crtc->state);
+	struct drm_property_blob *blob;
+	struct drm_msm_pcc *pcc_cfg;
 
 	sde_cp_get_hw_payload(prop_node, &hw_cfg, &feature_enabled);
 	hw_cfg.num_of_mixers = sde_crtc->num_mixers;
 	hw_cfg.last_feature = 0;
 
-	if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC)
-		return;
+	if (prop_node->feature == SDE_CP_CRTC_DSPP_PCC) {
+		blob = prop_node->blob_ptr;
+		if (blob != NULL) {
+			pcc_cfg = blob->data;
+			if (pcc_cfg->r.c == 0 && pcc_cfg->b.c == 0 && pcc_cfg->g.c == 0) {
+				cstate->color_invert_on = false;
+				hw_cfg.payload = NULL;
+				hw_cfg.len = 0;
+			} else
+				cstate->color_invert_on = true;
+		}
+	}
 
 	for (i = 0; i < num_mixers && !ret; i++) {
 		hw_lm = sde_crtc->mixers[i].hw_lm;
