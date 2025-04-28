@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "ace1f6e1_4f3eb9b8",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 26928
+      },
+      "writtenOn": "2025-04-28T23:58:49Z",
+      "side": 1,
+      "message": "It requires additional adaption/testing to make scrub_pos working on this device!",
+      "revId": "fbcf6950a574469973bace0b654adab4bc18c669",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
