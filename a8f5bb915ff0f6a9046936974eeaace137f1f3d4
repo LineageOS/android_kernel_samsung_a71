@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7ade3762_67b97450",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 31655
+      },
+      "writtenOn": "2025-04-28T12:21:11Z",
+      "side": 1,
+      "message": "apply I097413be9c519c22ee71483bdc084512f05e0465, no need for a new commit without authorship or commit message",
+      "revId": "a8f5bb915ff0f6a9046936974eeaace137f1f3d4",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
