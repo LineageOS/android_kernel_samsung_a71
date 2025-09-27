@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "eea2aca0_eab0dbbd",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 26928
+      },
+      "writtenOn": "2025-09-27T20:41:14Z",
+      "side": 1,
+      "message": "I\u0027d rather push bpf backports first, since it boots without issues and without including any openela changes or fake uname thingy, for now.",
+      "revId": "4d9459d0b10c8f4e3cdb7bb6516e8d871c4ab861",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
