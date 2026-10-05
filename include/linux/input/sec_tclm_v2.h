@@ -70,9 +70,10 @@ struct sec_tclm_nvdata {
 	u8 cal_pos_hist_cnt;
 	u8 cal_pos_hist_lastp;
 	u8 cal_pos_hist_queue[2 * CAL_HISTORY_QUEUE_MAX];
+	u8 reserved; /* Aligns with SEC_TS_NVM_OFFSET_CAL_FAIL_FLAG definition */
 	u8 cal_fail_falg; /* pass : 1 fail : etc */ 
 	u8 cal_fail_cnt; /* history cnt */ 
-};
+}__packed;
 
 /* TCLM_CONCEPT  - end */
 struct sec_tclm_data {
